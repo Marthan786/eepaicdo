@@ -96,128 +96,207 @@
     </form>
   </div>
 
-  <script>
-    const $ = s => document.querySelector(s);
-    const opt = (v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;return o;};
-    let topoAll=[], morphAll=[];
+<script>
+  const $ = s => document.querySelector(s);
+  const opt = (v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;return o;};
+  let topoAll=[], morphAll=[];
 
-    async function loadCSV(path){
-      const res = await fetch(path,{cache:"no-store"});
-      if(!res.ok) throw new Error("Fetch failed: "+path);
-      const text = await res.text();
-      return new Promise(resolve => Papa.parse(text,{header:false,skipEmptyLines:true,complete:r=>resolve(r.data)}));
-    }
-    function norm(x){return String(x||"").trim().replace(/\s+/g," ").replace(/[–—]/g,"-");}
-    function findCols(h){
-      const L=h.map(c=>String(c||"").trim().toLowerCase());
-      let code=-1,name=-1;
-      const codeKeys=["code","icd","icdo","morph","topography","topo"];
-      const nameKeys=["name","term","label","description","site","topography"];
-      L.forEach((c,i)=>{if(code<0 && codeKeys.some(k=>c.includes(k))) code=i;});
-      L.forEach((c,i)=>{if(name<0 && nameKeys.some(k=>c.includes(k))) name=i;});
-      return {code,name};
-    }
-    function guessTopo(row){const rx=/C\d{2}(?:\.\d)?/i;for(const cell of row){const m=String(cell||"").match(rx);if(m) return m[0].toUpperCase();} return null;}
-    function guessMorph(row){const rx=/\b(\d{4})(?:\/\d)?\b/;for(const cell of row){const m=String(cell||"").match(rx);if(m) return m[1];} return null;}
+  // Load CSV with Papa; it auto-detects delimiter
+  async function loadCSV(path){
+    const res = await fetch(path,{cache:"no-store"});
+    if(!res.ok) throw new Error("Fetch failed: "+path);
+    const text = await res.text();
+    return new Promise(resolve => Papa.parse(text,{header:false,skipEmptyLines:true,complete:r=>resolve(r.data)}));
+  }
 
-    function setupFilter(inputId, selectEl, all, placeholder){
-      const input = $("#"+inputId);
-      function rebuild(list){
-        const prev = selectEl.value;
-        selectEl.innerHTML=""; selectEl.appendChild(opt("", placeholder));
-        list.forEach(x=> selectEl.appendChild(opt(x.code, `${x.code} — ${x.name}`)));
-        if ([...selectEl.options].some(o=>o.value===prev)) selectEl.value=prev;
+  function norm(x){return String(x||"").trim().replace(/\s+/g," ").replace(/[–—]/g,"-");}
+
+  // Robust header-based column picking
+  function pickCol(headerRow, candidates){
+    if(!headerRow) return -1;
+    const L = headerRow.map(c=>String(c||"").trim().toLowerCase());
+    for(const cand of candidates){
+      for(let i=0;i<L.length;i++){
+        if(L[i].includes(cand)) return i;
       }
-      function filter(q){
-        const n=q.trim().toLowerCase();
-        if(!n){rebuild(all); return;}
-        const out=all.filter(x=>(x.code+" "+x.name).toLowerCase().includes(n));
-        rebuild(out);
+    }
+    return -1;
+  }
+
+  // Try to split a single cell like "C50.9 - Breast, NOS" into {code,name}
+  function splitCodeAndNameJoined(cell){
+    const s = String(cell||"");
+    const m = s.match(/^(C\d{2}(?:\.\d)?)\s*[-–—]?\s*(.+)$/i);
+    if(m) return {code: m[1].toUpperCase(), name: norm(m[2])};
+    return null;
+  }
+
+  // Find a code-looking token somewhere in the row (e.g., Cxx.x)
+  function guessTopoCode(row){
+    const rx = /C\d{2}(?:\.\d)?/i;
+    for(const cell of row){
+      const m = String(cell||"").match(rx);
+      if(m) return m[0].toUpperCase();
+    }
+    return "";
+  }
+
+  // Find a 4-digit morphology in the row
+  function guessMorphCode(row){
+    const rx = /\b(\d{4})(?:\/\d)?\b/;
+    for(const cell of row){
+      const m = String(cell||"").match(rx);
+      if(m) return m[1];
+    }
+    return "";
+  }
+
+  // Build filtered select with live type filter
+  function setupFilter(inputId, selectEl, all, placeholder){
+    const input = $("#"+inputId);
+    function rebuild(list){
+      const prev = selectEl.value;
+      selectEl.innerHTML=""; selectEl.appendChild(opt("", placeholder));
+      list.forEach(x=> selectEl.appendChild(opt(x.code, `${x.code} — ${x.name}`)));
+      if ([...selectEl.options].some(o=>o.value===prev)) selectEl.value=prev;
+    }
+    function filter(q){
+      const n=q.trim().toLowerCase();
+      if(!n){rebuild(all); return;}
+      const out=all.filter(x=>(x.code+" "+x.name).toLowerCase().includes(n));
+      rebuild(out);
+    }
+    input.addEventListener("input",()=>filter(input.value));
+    input.addEventListener("keydown",(e)=>{
+      if(e.key==="Escape"){input.value=""; filter(""); e.preventDefault();}
+      if(e.key==="Enter"){
+        const first=[...selectEl.options].find((o,i)=>i>0&&o.value);
+        if(first){selectEl.value=first.value; selectEl.dispatchEvent(new Event("change",{bubbles:true}));}
+        e.preventDefault();
       }
-      input.addEventListener("input",()=>filter(input.value));
-      input.addEventListener("keydown",(e)=>{
-        if(e.key==="Escape"){input.value=""; filter(""); e.preventDefault();}
-        if(e.key==="Enter"){const first=[...selectEl.options].find((o,i)=>i>0&&o.value); if(first){selectEl.value=first.value; selectEl.dispatchEvent(new Event("change",{bubbles:true}));} e.preventDefault();}
-      });
-      rebuild(all);
-    }
-
-    async function loadData(){
-      // Topography
-      const trows = await loadCSV("data/icdo_topography.csv");
-      const th = trows[0]||[]; const tc = findCols(th);
-      topoAll = trows.slice(1).map(r=>{
-        let code = (tc.code>=0&&tc.code<r.length)? norm(r[tc.code]) : guessTopo(r)||"";
-        let name = (tc.name>=0&&tc.name<r.length)? norm(r[tc.name]) : "";
-        if(!name){ for(const cell of r){ if(cell && !/C\d{2}(\.\d)?/i.test(String(cell))) { name=norm(cell); break; } } }
-        return code&&name? {code,name}:null;
-      }).filter(Boolean);
-
-      // Morphology
-      const mrows = await loadCSV("data/icdo_morphology.csv");
-      const mh = mrows[0]||[]; const mc = findCols(mh);
-      morphAll = mrows.slice(1).map(r=>{
-        let code = (mc.code>=0&&mc.code<r.length)? norm(r[mc.code]) : guessMorph(r)||"";
-        let name = (mc.name>=0&&mc.name<r.length)? norm(r[mc.name]) : "";
-        if(!name){ for(const cell of r){ if(cell && !/\b\d{4}(?:\/\d)?\b/.test(String(cell))) { name=norm(cell); break; } } }
-        return code&&name? {code,name}:null;
-      }).filter(Boolean);
-
-      // Populate selects
-      const topoSel=$("#topography"), morphSel=$("#morphology");
-      topoSel.appendChild(opt("","— choose topography —"));
-      morphSel.appendChild(opt("","— choose morphology —"));
-      topoAll.forEach(t=> topoSel.appendChild(opt(t.code, `${t.code} — ${t.name}`)));
-      morphAll.forEach(m=> morphSel.appendChild(opt(m.code, `${m.code} — ${m.name}`)));
-
-      // Behavior, Grade, Laterality
-      const beh=$("#behavior"); beh.innerHTML="";
-      [{v:"",t:"— choose behavior —"},{v:"0",t:"0 — Benign"},{v:"1",t:"1 — Uncertain"},{v:"2",t:"2 — In situ"},{v:"3",t:"3 — Malignant, primary"},{v:"6",t:"6 — Malignant, metastatic"},{v:"9",t:"9 — Malignant, uncertain"}].forEach(o=>beh.appendChild(opt(o.v,o.t)));
-      const grd=$("#grade"); grd.innerHTML="";
-      [{v:"",t:"(none)"},{v:"1",t:"1 — Well differentiated"},{v:"2",t:"2 — Moderately differentiated"},{v:"3",t:"3 — Poorly differentiated"},{v:"4",t:"4 — Undifferentiated"}].forEach(o=>grd.appendChild(opt(o.v,o.t)));
-      const lat=$("#laterality"); lat.innerHTML="";
-      ["","Right","Left","Bilateral","Not applicable"].forEach(x=>lat.appendChild(opt(x, x||"(none)")));
-
-      // Type-to-filter hooks
-      setupFilter("filter_topo", topoSel, topoAll, "— choose topography —");
-      setupFilter("filter_morph", morphSel, morphAll, "— choose morphology —");
-    }
-
-    // Compose result
-    $("#icdoForm").addEventListener("submit",(e)=>{
-      e.preventDefault();
-      const topo=$("#topography").value, morph=$("#morphology").value, beh=$("#behavior").value;
-      const grade=$("#grade").value, lat=$("#laterality").value;
-      if(!topo || !morph || !beh){ alert("Choose Topography, Morphology and Behavior."); return; }
-      const morphFull = grade ? `${morph}/${beh}${grade}` : `${morph}/${beh}`;
-      const final = `${topo} ${morphFull}${lat? " — "+lat : ""}`;
-      $("#resultCode").textContent = final;
-
-      const topoText=$("#topography").selectedOptions[0]?.textContent||"";
-      const morphText=$("#morphology").selectedOptions[0]?.textContent||"";
-      $("#partsLine").textContent = `Topography: ${topoText} | Morphology: ${morphText} → ${morphFull}${grade? " (grade "+grade+")":""}${lat? " | Laterality: "+lat:""}`;
     });
+    rebuild(all);
+  }
 
-    $("#resetBtn").addEventListener("click",()=>{
-      $("#icdoForm").reset();
-      $("#resultCode").textContent="— your code will appear here —";
-      $("#partsLine").textContent="";
-    });
+  async function loadData(){
+    // ---- TOPOGRAPHY ----
+    const trows = await loadCSV("data/icdo_topography.csv");
+    const th = trows[0] || [];
+    // Prefer explicit, unambiguous header cues
+    const topoCodeIdx = pickCol(th, ["topography code","topo code","site code","code","icd-o","icdo","icd o"]);
+    const topoNameIdx = pickCol(th, ["topography name","topo name","site name","site","name","description","label"]);
 
-    $("#copyBtn").addEventListener("click", async ()=>{
-      const t=$("#resultCode").textContent.trim();
-      if(!t || t.includes("will")) return;
-      try{
-        await navigator.clipboard.writeText(t);
-        const ok=$("#copied"); ok.style.display="inline";
-        setTimeout(()=> ok.style.display="none",1200);
-      }catch{ alert("Copy failed. Select and press Ctrl+C."); }
-    });
+    topoAll = trows.slice(1).map(row=>{
+      // If both columns exist by header
+      if(topoCodeIdx>=0 && topoNameIdx>=0 && topoCodeIdx!==topoNameIdx){
+        const code = norm(row[topoCodeIdx]||"");
+        const name = norm(row[topoNameIdx]||"");
+        return code && name ? {code,name} : null;
+      }
+      // Try joined cell like "Cxx.x - Name"
+      for(const cell of row){
+        const split = splitCodeAndNameJoined(cell);
+        if(split) return split;
+      }
+      // Last resort: find a code anywhere, call the first non-code cell the name
+      const codeGuess = guessTopoCode(row);
+      if(!codeGuess) return null;
+      let nameGuess = "";
+      for(const cell of row){
+        const s = String(cell||"").trim();
+        if(!s) continue;
+        if(/C\d{2}(?:\.\d)?/i.test(s)) continue;
+        nameGuess = norm(s); break;
+      }
+      return nameGuess ? {code:codeGuess, name:nameGuess} : null;
+    }).filter(Boolean);
 
-    loadData().catch(err=>{
-      console.error(err);
-      alert("Failed to load CSVs from /data. Ensure filenames and UTF-8 encoding.");
-    });
-  </script>
+    // ---- MORPHOLOGY ----
+    const mrows = await loadCSV("data/icdo_morphology.csv");
+    const mh = mrows[0] || [];
+    const morphCodeIdx = pickCol(mh, ["morphology code","morph code","code","icd-o","icdo","icd o","morph"]);
+    const morphNameIdx = pickCol(mh, ["morphology name","morph name","name","description","label"]);
+
+    morphAll = mrows.slice(1).map(row=>{
+      if(morphCodeIdx>=0 && morphNameIdx>=0 && morphCodeIdx!==morphNameIdx){
+        const code = norm(row[morphCodeIdx]||"");
+        const name = norm(row[morphNameIdx]||"");
+        return code && name ? {code,name} : null;
+      }
+      for(const cell of row){
+        const s = String(cell||"");
+        const m = s.match(/^(\d{4})(?:\/\d)?\s*[-–—]?\s*(.+)$/);
+        if(m) return {code:m[1], name:norm(m[2])};
+      }
+      const codeGuess = guessMorphCode(row);
+      if(!codeGuess) return null;
+      let nameGuess="";
+      for(const cell of row){
+        const s=String(cell||"").trim();
+        if(!s) continue;
+        if(/\b\d{4}(?:\/\d)?\b/.test(s)) continue;
+        nameGuess = norm(s); break;
+      }
+      return nameGuess ? {code:codeGuess, name:nameGuess} : null;
+    }).filter(Boolean);
+
+    // Populate selects
+    const topoSel=$("#topography"), morphSel=$("#morphology");
+    topoSel.innerHTML=""; morphSel.innerHTML="";
+    topoSel.appendChild(opt("","— choose topography —"));
+    morphSel.appendChild(opt("","— choose morphology —"));
+    topoAll.forEach(t=> topoSel.appendChild(opt(t.code, `${t.code} — ${t.name}`)));
+    morphAll.forEach(m=> morphSel.appendChild(opt(m.code, `${m.code} — ${m.name}`)));
+
+    // Behavior, Grade, Laterality
+    const beh=$("#behavior"); beh.innerHTML="";
+    [{v:"",t:"— choose behavior —"},{v:"0",t:"0 — Benign"},{v:"1",t:"1 — Uncertain"},{v:"2",t:"2 — In situ"},{v:"3",t:"3 — Malignant, primary"},{v:"6",t:"6 — Malignant, metastatic"},{v:"9",t:"9 — Malignant, uncertain"}].forEach(o=>beh.appendChild(opt(o.v,o.t)));
+    const grd=$("#grade"); grd.innerHTML="";
+    [{v:"",t:"(none)"},{v:"1",t:"1 — Well differentiated"},{v:"2",t:"2 — Moderately differentiated"},{v:"3",t:"3 — Poorly differentiated"},{v:"4",t:"4 — Undifferentiated"}].forEach(o=>grd.appendChild(opt(o.v,o.t)));
+    const lat=$("#laterality"); lat.innerHTML="";
+    ["","Right","Left","Bilateral","Not applicable"].forEach(x=>lat.appendChild(opt(x, x||"(none)")));
+
+    // Type-to-filter
+    setupFilter("filter_topo", topoSel, topoAll, "— choose topography —");
+    setupFilter("filter_morph", morphSel, morphAll, "— choose morphology —");
+  }
+
+  // Compose the result when form submits
+  $("#icdoForm").addEventListener("submit",(e)=>{
+    e.preventDefault();
+    const topo=$("#topography").value, morph=$("#morphology").value, beh=$("#behavior").value;
+    const grade=$("#grade").value, lat=$("#laterality").value;
+    if(!topo || !morph || !beh){ alert("Choose Topography, Morphology and Behavior."); return; }
+    const morphFull = grade ? `${morph}/${beh}${grade}` : `${morph}/${beh}`;
+    const final = `${topo} ${morphFull}${lat? " — "+lat : ""}`;
+    $("#resultCode").textContent = final;
+
+    const topoText=$("#topography").selectedOptions[0]?.textContent||"";
+    const morphText=$("#morphology").selectedOptions[0]?.textContent||"";
+    $("#partsLine").textContent = `Topography: ${topoText} | Morphology: ${morphText} → ${morphFull}${grade? " (grade "+grade+")":""}${lat? " | Laterality: "+lat:""}`;
+  });
+
+  $("#resetBtn").addEventListener("click",()=>{
+    $("#icdoForm").reset();
+    $("#resultCode").textContent="— your code will appear here —";
+    $("#partsLine").textContent="";
+  });
+
+  $("#copyBtn").addEventListener("click", async ()=>{
+    const t=$("#resultCode").textContent.trim();
+    if(!t || t.includes("will")) return;
+    try{
+      await navigator.clipboard.writeText(t);
+      const ok=$("#copied"); ok.style.display="inline";
+      setTimeout(()=> ok.style.display="none",1200);
+    }catch{ alert("Copy failed. Select and press Ctrl+C."); }
+  });
+
+  loadData().catch(err=>{
+    console.error(err);
+    alert("Failed to load CSVs from /data. Ensure filenames are correct and saved as UTF-8.");
+  });
+</script>
+
 </body>
 </html>
