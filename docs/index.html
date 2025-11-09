@@ -180,7 +180,7 @@
 
   async function loadData(){
     // ---- TOPOGRAPHY ----
-    const trows = await loadCSV("data/icdo_topography.csv");
+    const trows = await loadCSV("docs/data/icdo_topography.csv");
     const th = trows[0] || [];
     // Prefer explicit, unambiguous header cues
     const topoCodeIdx = pickCol(th, ["topography code","topo code","site code","code","icd-o","icdo","icd o"]);
@@ -212,7 +212,7 @@
     }).filter(Boolean);
 
     // ---- MORPHOLOGY ----
-    const mrows = await loadCSV("data/icdo_morphology.csv");
+    const mrows = await loadCSV("docs/data/icdo_morphology.csv");
     const mh = mrows[0] || [];
     const morphCodeIdx = pickCol(mh, ["morphology code","morph code","code","icd-o","icdo","icd o","morph"]);
     const morphNameIdx = pickCol(mh, ["morphology name","morph name","name","description","label"]);
