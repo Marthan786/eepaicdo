@@ -358,7 +358,7 @@
         const topo=$("#topography").value, morph=$("#morphology").value, beh=$("#behavior").value;
         const grade=$("#grade").value, lat=$("#laterality").value;
         if(!topo || !morph || !beh){ alert("Choose Topography, Morphology and Behavior."); return; }
-        const morphFull = grade ? `${morph}/${beh}${grade}` : `${morph}/${beh}`;
+        const morphFull = `${morph}/${beh}${grade ? `/${grade}` : ""}`;
         const final = `${topo} ${morphFull}${lat? " — "+lat : ""}`;
         $("#resultCode").textContent = final;
 
