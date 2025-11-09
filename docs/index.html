@@ -13,9 +13,7 @@
       --card:#ffffff;     /* card background */
       --border:#d8cfc0;   /* soft border */
     }
-
     *{ box-sizing: border-box; }
-
     body{
       margin:0;
       background:var(--bg);
@@ -23,7 +21,6 @@
       font-family: Calibri, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       line-height:1.4;
     }
-
     main{
       max-width:1100px;
       margin:0 auto;
@@ -32,7 +29,6 @@
       gap:20px;
       grid-template-columns: 1fr;
     }
-
     .grid{ display:grid; gap:16px; grid-template-columns: repeat(12, 1fr); }
     .card{
       background:var(--card);
@@ -43,9 +39,7 @@
     }
     .span-6{ grid-column: span 6; }
     .span-12{ grid-column: span 12; }
-
     label{ display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
-
     input[type="text"], select{
       width:100%;
       padding:10px 12px;
@@ -54,15 +48,13 @@
       background:#ffffff;
       color:var(--fg);
       outline:none;
+      min-height:40px;
     }
     input[type="text"]:focus, select:focus{
       border-color:#b7ae9f;
       box-shadow: 0 0 0 3px rgba(11,108,255,0.08);
     }
-
-    select{ min-height:40px; }
     .row{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-
     .btns{ display:flex; gap:10px; align-items:center; }
     button{
       padding:10px 14px;
@@ -73,15 +65,11 @@
       cursor:pointer;
     }
     button:hover{ border-color:#bcb4a5; }
-
     #resultCode{ font-size:18px; font-weight:600; letter-spacing:0.3px; }
     #copied{ display:none; font-size:12px; color:var(--accent); }
     .hint{ font-size:12px; color:var(--muted); }
-    .status{ font-size:12px; color:var(--muted); }
-
     a{ color:var(--accent); text-decoration:none; }
     a:hover{ text-decoration:underline; }
-
     @media (max-width: 900px){
       .span-6{ grid-column: span 12; }
       .row{ grid-template-columns: 1fr; }
@@ -91,12 +79,6 @@
 </head>
 <body>
   <main>
-    <div class="card span-12 status">
-      CSVs are loaded from <code>data/</code> or <code>docs/data/</code> automatically.
-      If names don’t appear, your file likely lacks a name column. This page also
-      stitches multi-cell names and understands Greek headers.
-    </div>
-
     <form id="icdoForm" class="grid">
       <div class="card span-6">
         <label for="filter_topo">Search Topography</label>
@@ -155,8 +137,6 @@
         </div>
       </div>
     </form>
-
-    <div class="card span-12 status" id="statusLine"></div>
   </main>
 
   <script>
@@ -278,10 +258,7 @@
     }
 
     async function loadData(){
-      const status = $("#statusLine");
-      status.textContent = "Loading CSVs...";
-
-      // ---- TOPOGRAPHY ----
+      // Topography
       const trows = await loadCSVAny([
         "data/icdo_topography.csv",
         "docs/data/icdo_topography.csv"
@@ -313,7 +290,7 @@
         return nameGuess ? {code:codeGuess, name:nameGuess} : null;
       }).filter(Boolean);
 
-      // ---- MORPHOLOGY ----
+      // Morphology
       const mrows = await loadCSVAny([
         "data/icdo_morphology.csv",
         "docs/data/icdo_morphology.csv"
@@ -339,6 +316,7 @@
         return robustMorphFromRow(row);
       }).filter(Boolean);
 
+      // Build selects
       const topoSel=$("#topography"), morphSel=$("#morphology");
       topoSel.innerHTML=""; morphSel.innerHTML="";
       topoSel.appendChild(opt("","— choose topography —"));
@@ -372,10 +350,6 @@
 
       setupFilter("filter_topo", topoSel, topoAll, "— choose topography —");
       setupFilter("filter_morph", morphSel, morphAll, "— choose morphology —");
-
-      const noNameCount = morphAll.filter(m => !m.name).length;
-      status.textContent = `Loaded ${topoAll.length} topography entries and ${morphAll.length} morphology entries`
-        + (noNameCount ? ` (${noNameCount} without names; likely missing name column).` : ".");
     }
 
     function setupForm(){
@@ -420,8 +394,7 @@
         await loadData();
       } catch (err) {
         console.error(err);
-        $("#statusLine").textContent = "Failed to load CSVs. Ensure files exist, paths are correct, and CSVs are UTF-8.";
-        alert("Failed to load CSVs from /data or /docs/data. Check console for details.");
+        alert("Failed to load CSVs from /data or /docs/data. Ensure files exist and are UTF-8.");
       }
     })();
   </script>
