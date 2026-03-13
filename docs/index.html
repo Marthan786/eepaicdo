@@ -12,6 +12,9 @@
       --accent:#0b6cff;   /* links, highlights */
       --card:#ffffff;     /* card background */
       --border:#d8cfc0;   /* soft border */
+      --warn:#b45309;     /* warning-ish */
+      --bad:#b91c1c;      /* danger-ish */
+      --ok:#15803d;       /* ok-ish */
     }
     *{ box-sizing: border-box; }
     body{
@@ -54,8 +57,13 @@
       border-color:#b7ae9f;
       box-shadow: 0 0 0 3px rgba(11,108,255,0.08);
     }
+    select:disabled{
+      opacity:0.75;
+      background:#fbfbfb;
+      cursor:not-allowed;
+    }
     .row{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-    .btns{ display:flex; gap:10px; align-items:center; }
+    .btns{ display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
     button{
       padding:10px 14px;
       border-radius:10px;
@@ -68,11 +76,33 @@
     #resultCode{ font-size:18px; font-weight:600; letter-spacing:0.3px; }
     #copied{ display:none; font-size:12px; color:var(--accent); }
     .hint{ font-size:12px; color:var(--muted); }
+    .pill{
+      display:inline-block;
+      font-size:12px;
+      padding:4px 8px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      margin-right:8px;
+      margin-bottom:6px;
+      white-space: nowrap;
+    }
+    .pill.warn{ border-color: rgba(180,83,9,0.35); color: var(--warn); }
+    .pill.bad{ border-color: rgba(185,28,28,0.35); color: var(--bad); }
+    .pill.ok{ border-color: rgba(21,128,61,0.35); color: var(--ok); }
     a{ color:var(--accent); text-decoration:none; }
     a:hover{ text-decoration:underline; }
     @media (max-width: 900px){
       .span-6{ grid-column: span 12; }
       .row{ grid-template-columns: 1fr; }
+    }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .notesBox{
+      padding:10px 12px;
+      border:1px solid var(--border);
+      border-radius:10px;
+      background:#fff;
+      min-height:40px;
     }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -105,6 +135,7 @@
           <div>
             <label for="behavior">Behavior</label>
             <select id="behavior"></select>
+            <div class="hint" id="behHint"></div>
           </div>
           <div>
             <label for="grade">Grade</label>
@@ -116,6 +147,13 @@
       <div class="card span-6">
         <label for="laterality">Laterality</label>
         <select id="laterality"></select>
+      </div>
+
+      <div class="card span-12">
+        <label>Morphology notes (optional 2026 update metadata)</label>
+        <div id="morphNotes" class="notesBox">
+          <span class="hint">If you add a 2026 update JSON (see comments in code), warnings and “required” badges show up here.</span>
+        </div>
       </div>
 
       <div class="card span-12">
@@ -134,6 +172,7 @@
           <button type="button" id="copyBtn">Copy</button>
           <button type="button" id="resetBtn">Reset</button>
           <span id="copied">Copied</span>
+          <span class="hint">CSV paths tried: <span class="mono">/data</span>, <span class="mono">/docs/data</span>, and repo root.</span>
         </div>
       </div>
     </form>
@@ -142,22 +181,51 @@
   <script>
     const $ = s => document.querySelector(s);
     const opt = (v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;return o;};
-    let topoAll=[], morphAll=[];
 
-    function norm(x){return String(x||"").trim().replace(/\s+/g," ").replace(/[–—]/g,"-");}
+    let topoAll = [];
+    let morphAll = [];
+
+    // Optional metadata map keyed by "####/b"
+    // If you add a JSON file like:
+    //   data/icdo_3_2_update_2026_terms.json
+    // (array of objects with fields like icdo, term, remarks, required flags, non_reportable_note, site_ranges),
+    // this code will pick it up and show warnings.
+    let morphMetaByCode = new Map();
+
+    function norm(x){ return String(x||"").trim().replace(/\s+/g," ").replace(/[–—]/g,"-"); }
+
+    // Accent-insensitive, case-insensitive search key.
+    // Works for Greek tonos too because Unicode decomposes combining marks.
+    function keyify(x){
+      return norm(x)
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, ""); // strip diacritics
+    }
+
+    async function fetchText(path){
+      const res = await fetch(path, { cache: "no-store" });
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      return await res.text();
+    }
+
+    async function fetchJSON(path){
+      const res = await fetch(path, { cache: "no-store" });
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      return await res.json();
+    }
 
     async function loadCSVAny(paths){
+      let lastErr = null;
       for (const path of paths){
         try {
-          const res = await fetch(path, { cache: "no-store" });
-          if (!res.ok) continue;
-          const text = await res.text();
-          return new Promise(resolve =>
+          const text = await fetchText(path);
+          return await new Promise(resolve =>
             Papa.parse(text, { header:false, skipEmptyLines:true, complete:r=>resolve(r.data) })
           );
-        } catch {}
+        } catch (e) { lastErr = e; }
       }
-      throw new Error("Fetch failed for: " + paths.join(", "));
+      throw lastErr || new Error("Fetch failed for: " + paths.join(", "));
     }
 
     function pickCol(headerRow, candidates){
@@ -187,18 +255,40 @@
       return "";
     }
 
+    function parseMorphCode(s){
+      const t = norm(s);
+      const m1 = t.match(/\b(\d{4}\/\d)\b/);  // preferred
+      if(m1) return { full: m1[1], hist: m1[1].split("/")[0], beh: m1[1].split("/")[1] };
+      const m2 = t.match(/\b(\d{4})\b/);
+      if(m2) return { full: m2[1], hist: m2[1], beh: "" };
+      return null;
+    }
+
     // Robust multi-cell morphology name extraction
     function robustMorphFromRow(row){
       for(const cell of row){
         const s = String(cell||"");
-        const m = s.match(/^(\d{4})(?:\/\d)?\s*[-–—]?\s*(.+)$/);
-        if (m) return { code: m[1], name: norm(m[2]) };
+        const m = s.match(/^(\d{4}\/\d)\s*[-–—]?\s*(.+)$/);
+        if (m) return { full: m[1], hist: m[1].split("/")[0], beh: m[1].split("/")[1], name: norm(m[2]) };
       }
-      const codeIdx = row.findIndex(c => /\b\d{4}\b/.test(String(c||"")));
-      if (codeIdx < 0) return null;
-      const code = String(row[codeIdx]).match(/\b(\d{4})\b/)[1];
+      for(const cell of row){
+        const s = String(cell||"");
+        const m = s.match(/^(\d{4})(?:\/\d)?\s*[-–—]?\s*(.+)$/);
+        if (m) return { full: m[1], hist: m[1], beh: "", name: norm(m[2]) };
+      }
+
+      // Find a code somewhere in row
+      let codeInfo = null;
+      let codeIdx = -1;
+      for(let i=0;i<row.length;i++){
+        const info = parseMorphCode(row[i]);
+        if(info){ codeInfo = info; codeIdx = i; break; }
+      }
+      if(!codeInfo) return null;
+
       const hasLetters = s => /[A-Za-zΑ-Ωα-ω]/.test(s);
 
+      // Gather text to the right
       const parts = [];
       for (let j = codeIdx + 1; j < row.length; j++){
         const s = norm(row[j]);
@@ -208,8 +298,9 @@
         if (!hasLetters(s)) continue;
         parts.push(s);
       }
-      if (parts.length) return { code, name: norm(parts.join(" ")) };
+      if (parts.length) return { ...codeInfo, name: norm(parts.join(" ")) };
 
+      // Or left
       const leftParts = [];
       for (let j = codeIdx - 1; j >= 0; j--){
         const s = norm(row[j]);
@@ -219,49 +310,290 @@
         if (!hasLetters(s)) continue;
         leftParts.unshift(s);
       }
-      if (leftParts.length) return { code, name: norm(leftParts.join(" ")) };
+      if (leftParts.length) return { ...codeInfo, name: norm(leftParts.join(" ")) };
 
+      // Fallback longest text cell
       let best = "";
       for (const cell of row){
         const s = norm(cell);
         if (!hasLetters(s)) continue;
         if (s.length > best.length) best = s;
       }
-      return best ? { code, name: best } : null;
+      return best ? { ...codeInfo, name: best } : { ...codeInfo, name: "" };
     }
 
     function setupFilter(inputId, selectEl, all, placeholder){
       const input = $("#"+inputId);
+
       function rebuild(list){
         const prev = selectEl.value;
         selectEl.innerHTML="";
         selectEl.appendChild(opt("", placeholder));
-        list.forEach(x=> selectEl.appendChild(opt(x.code, `${x.code} — ${x.name || "(no name)"}`)));
+        list.forEach(x=>{
+          const o = opt(x.value, `${x.label}`);
+          if(x.data){
+            for(const [k,v] of Object.entries(x.data)){
+              o.dataset[k] = v;
+            }
+          }
+          selectEl.appendChild(o);
+        });
         if ([...selectEl.options].some(o=>o.value===prev)) selectEl.value=prev;
       }
+
       function filter(q){
-        const n=q.trim().toLowerCase();
-        if(!n){rebuild(all); return;}
-        const out=all.filter(x=>(x.code+" "+(x.name||"")).toLowerCase().includes(n));
+        const n = keyify(q);
+        if(!n){ rebuild(all); return; }
+        const out = all.filter(x=> x.searchKey.includes(n));
         rebuild(out);
       }
-      input.addEventListener("input",()=>filter(input.value));
+
+      // Debounced, because browsers have hobbies too
+      let t=null;
+      input.addEventListener("input",()=>{
+        clearTimeout(t);
+        t=setTimeout(()=>filter(input.value), 80);
+      });
+
       input.addEventListener("keydown",(e)=>{
         if(e.key==="Escape"){input.value=""; filter(""); e.preventDefault();}
         if(e.key==="Enter"){
-          const first=[...selectEl.options].find((o,i)=>i>0&&o.value);
-          if(first){selectEl.value=first.value; selectEl.dispatchEvent(new Event("change",{bubbles:true}));}
+          const first=[...selectEl.options].find((o,i)=>i>0 && o.value);
+          if(first){
+            selectEl.value=first.value;
+            selectEl.dispatchEvent(new Event("change",{bubbles:true}));
+          }
           e.preventDefault();
         }
       });
+
       rebuild(all);
     }
 
+    // --- Optional metadata support (2026 update warnings) ---
+    function topoToKey(code){
+      // "C02.1" -> major 2, sub 1 => 21 (major*10 + sub)
+      // "C14._" treated elsewhere
+      const m = String(code||"").toUpperCase().match(/^C(\d{2})(?:\.(\d))?$/);
+      if(!m) return null;
+      const major = parseInt(m[1],10);
+      const sub = (m[2]===undefined) ? 0 : parseInt(m[2],10);
+      return major*10 + sub;
+    }
+
+    function parseSiteRangeToken(tok){
+      // Handles "C00.3", "C06._", "C00.3-C06.2"
+      const t = String(tok||"").trim().toUpperCase();
+      if(!t) return null;
+
+      const parts = t.split("-").map(x=>x.trim());
+      const expandEndpoint = (c, isEnd)=>{
+        // "C06._" => [C06.0, C06.9]
+        const mm = c.match(/^C(\d{2})\._$/);
+        if(mm){
+          const major = parseInt(mm[1],10);
+          return isEnd ? (major*10 + 9) : (major*10 + 0);
+        }
+        const key = topoToKey(c);
+        return key;
+      };
+
+      if(parts.length===1){
+        const a = parts[0];
+        const start = expandEndpoint(a,false);
+        const end   = expandEndpoint(a,true);
+        if(start==null || end==null) return null;
+        return [Math.min(start,end), Math.max(start,end)];
+      }
+
+      const start = expandEndpoint(parts[0],false);
+      const end   = expandEndpoint(parts[1],true);
+      if(start==null || end==null) return null;
+      return [Math.min(start,end), Math.max(start,end)];
+    }
+
+    function topoInRanges(topoCode, ranges){
+      const key = topoToKey(topoCode);
+      if(key==null) return true; // can't evaluate, don't block
+      for(const r of ranges){
+        if(!r) continue;
+        const [a,b] = r;
+        if(key>=a && key<=b) return true;
+      }
+      return false;
+    }
+
+    function buildMetaMapFromArray(arr){
+      // Expect objects like:
+      // { icdo:"8085/2", term:"...", remarks:"...", non_reportable_note:true, site_ranges:["C00.3-C06.2", ...], seer_required:true, ... }
+      const map = new Map();
+      for(const it of arr){
+        const code = String(it.icdo || it.code || it.ICDO || "").trim();
+        if(!code) continue;
+        if(!map.has(code)) map.set(code, []);
+        map.get(code).push(it);
+      }
+      return map;
+    }
+
+    async function loadOptionalMeta(){
+      const candidates = [
+        "data/icdo_3_2_update_2026_terms.json",
+        "docs/data/icdo_3_2_update_2026_terms.json",
+        "icdo_3_2_update_2026_terms.json",
+        "data/icdo_morphology_meta.json",
+        "docs/data/icdo_morphology_meta.json",
+        "icdo_morphology_meta.json"
+      ];
+      for(const p of candidates){
+        try{
+          const j = await fetchJSON(p);
+          if(Array.isArray(j)){
+            morphMetaByCode = buildMetaMapFromArray(j);
+            return true;
+          }
+          // allow {items:[...]} shape too
+          if(j && Array.isArray(j.items)){
+            morphMetaByCode = buildMetaMapFromArray(j.items);
+            return true;
+          }
+        } catch {}
+      }
+      return false;
+    }
+
+    function renderMorphNotes(){
+      const box = $("#morphNotes");
+      const topo = $("#topography").value;
+      const morphOpt = $("#morphology").selectedOptions[0];
+      if(!morphOpt || !morphOpt.value){
+        box.innerHTML = `<span class="hint">Select a morphology to see any notes.</span>`;
+        return;
+      }
+
+      // Determine code "####/b"
+      const hist = morphOpt.dataset.histology || "";
+      const beh  = morphOpt.dataset.behavior || $("#behavior").value || "";
+      const code = (hist && beh) ? `${hist}/${beh}` : "";
+
+      const items = code ? (morphMetaByCode.get(code) || []) : [];
+      if(!items.length){
+        box.innerHTML = `<span class="hint">No metadata found for <span class="mono">${code || morphOpt.value}</span>. (That’s fine, unless you expected registry-style warnings.)</span>`;
+        return;
+      }
+
+      // Aggregate flags
+      const nonRep = items.some(x => !!x.non_reportable_note || /non[-\s]?reportable/i.test(String(x.remarks||"")));
+      const remarks = items.map(x => String(x.remarks||"").trim()).filter(Boolean);
+      const terms = items.map(x => String(x.term||x.name||"").trim()).filter(Boolean);
+
+      // Site ranges
+      let ranges = [];
+      for(const it of items){
+        const sr = it.site_ranges || it.siteRange || it.site_ranges_parsed;
+        if(Array.isArray(sr)){
+          for(const tok of sr){
+            const r = parseSiteRangeToken(tok);
+            if(r) ranges.push(r);
+          }
+        } else if(typeof sr === "string"){
+          // split by comma/semicolon
+          sr.split(/[;,]/).map(x=>x.trim()).forEach(tok=>{
+            const r = parseSiteRangeToken(tok);
+            if(r) ranges.push(r);
+          });
+        }
+      }
+
+      const siteMismatch = (ranges.length && topo) ? !topoInRanges(topo, ranges) : false;
+
+      // Required flags (if present)
+      const seer = items.some(x => x.seer_required === true || x.SEER === true);
+      const npcr = items.some(x => x.npcr_required === true || x.NPCR === true);
+      const coc  = items.some(x => x.coc_required === true  || x.CoC === true);
+      const cccr = items.some(x => x.cccr_required === true || x.CCCR === true);
+
+      const pills = [];
+      if(nonRep) pills.push(`<span class="pill bad">Non-reportable note</span>`);
+      if(siteMismatch) pills.push(`<span class="pill warn">Site restriction mismatch</span>`);
+      if(seer||npcr||coc||cccr){
+        const who = [
+          seer ? "SEER" : null,
+          npcr ? "NPCR" : null,
+          coc  ? "CoC"  : null,
+          cccr ? "CCCR" : null
+        ].filter(Boolean).join(", ");
+        pills.push(`<span class="pill ok">Required: ${who}</span>`);
+      } else {
+        pills.push(`<span class="pill">Required: (not flagged)</span>`);
+      }
+
+      const uniqTerms = [...new Set(terms)].slice(0, 8);
+      const uniqRemarks = [...new Set(remarks)].slice(0, 6);
+
+      const termHtml = uniqTerms.length
+        ? `<div class="hint" style="margin-top:6px;"><strong>Terms:</strong> ${uniqTerms.map(t=>`<span class="mono">${escapeHtml(t)}</span>`).join(" • ")}</div>`
+        : "";
+
+      const remHtml = uniqRemarks.length
+        ? `<div class="hint" style="margin-top:6px;"><strong>Remarks:</strong><ul style="margin:6px 0 0 18px;">${uniqRemarks.map(r=>`<li>${escapeHtml(r)}</li>`).join("")}</ul></div>`
+        : "";
+
+      const siteHtml = ranges.length
+        ? `<div class="hint" style="margin-top:6px;"><strong>Site rule:</strong> this morphology term is restricted; verify topography selection.</div>`
+        : "";
+
+      box.innerHTML = `
+        <div>${pills.join("")}</div>
+        <div class="hint" style="margin-top:6px;">Code: <span class="mono">${escapeHtml(code || morphOpt.value)}</span></div>
+        ${siteHtml}
+        ${termHtml}
+        ${remHtml}
+      `;
+    }
+
+    function escapeHtml(s){
+      return String(s||"")
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#039;");
+    }
+
+    function updateBehaviorLocking(){
+      const morphOpt = $("#morphology").selectedOptions[0];
+      const behSel = $("#behavior");
+      const hint = $("#behHint");
+
+      if(!morphOpt || !morphOpt.value){
+        behSel.disabled = false;
+        hint.textContent = "";
+        return;
+      }
+
+      const behFromMorph = morphOpt.dataset.behavior || "";
+      if(behFromMorph){
+        behSel.value = behFromMorph;
+        behSel.disabled = true;
+        hint.textContent = "Behavior is taken from the selected morphology code.";
+      } else {
+        behSel.disabled = false;
+        hint.textContent = "Behavior is not in the morphology list, so you must choose it.";
+      }
+
+      renderMorphNotes();
+    }
+
     async function loadData(){
-      // Topography
+      // --- Load optional metadata first (non-fatal) ---
+      await loadOptionalMeta();
+
+      // --- Topography ---
       const trows = await loadCSVAny([
         "data/icdo_topography.csv",
-        "docs/data/icdo_topography.csv"
+        "docs/data/icdo_topography.csv",
+        "icdo_topography.csv"
       ]);
 
       const th = trows[0] || [];
@@ -290,10 +622,11 @@
         return nameGuess ? {code:codeGuess, name:nameGuess} : null;
       }).filter(Boolean);
 
-      // Morphology
+      // --- Morphology ---
       const mrows = await loadCSVAny([
         "data/icdo_morphology.csv",
-        "docs/data/icdo_morphology.csv"
+        "docs/data/icdo_morphology.csv",
+        "icdo_morphology.csv"
       ]);
 
       const mh = mrows[0] || [];
@@ -308,24 +641,47 @@
       const mDataRows = looksLikeHeader ? mrows.slice(1) : mrows;
 
       morphAll = mDataRows.map(row=>{
+        // Direct columns (best case)
         if (morphCodeIdx>=0 && morphNameIdx>=0 && morphCodeIdx!==morphNameIdx){
-          const code = norm(row[morphCodeIdx]||"").match(/\b(\d{4})\b/)?.[1] || "";
+          const codeInfo = parseMorphCode(row[morphCodeIdx]||"");
+          if(!codeInfo) return null;
           const name = norm(row[morphNameIdx]||"");
-          return code && name ? {code, name} : (code ? {code, name:""} : null);
+          return { ...codeInfo, name };
         }
+        // Otherwise robust scan
         return robustMorphFromRow(row);
       }).filter(Boolean);
 
-      // Build selects
-      const topoSel=$("#topography"), morphSel=$("#morphology");
-      topoSel.innerHTML=""; morphSel.innerHTML="";
+      // --- Build selects ---
+      const topoSel = $("#topography");
+      const morphSel = $("#morphology");
+
+      topoSel.innerHTML = "";
+      morphSel.innerHTML = "";
       topoSel.appendChild(opt("","— choose topography —"));
       morphSel.appendChild(opt("","— choose morphology —"));
-      topoAll.forEach(t=> topoSel.appendChild(opt(t.code, `${t.code} — ${t.name}`)));
-      morphAll.forEach(m=> morphSel.appendChild(opt(m.code, `${m.code} — ${m.name || "(no name found)"}`)));
 
-      // Controls
-      const beh=$("#behavior"); beh.innerHTML="";
+      topoAll.forEach(t=>{
+        const o = opt(t.code, `${t.code} — ${t.name}`);
+        o.dataset.searchKey = keyify(`${t.code} ${t.name}`);
+        topoSel.appendChild(o);
+      });
+
+      morphAll.forEach(m=>{
+        // Store value as full if includes behavior, else histology only.
+        const value = m.full; // either "####/b" or "####"
+        const label = `${m.full} — ${m.name || "(no name found)"}`;
+
+        const o = opt(value, label);
+        o.dataset.histology = m.hist || "";
+        o.dataset.behavior = m.beh || "";
+        o.dataset.searchKey = keyify(`${m.full} ${m.name || ""}`);
+        morphSel.appendChild(o);
+      });
+
+      // Behavior select
+      const beh = $("#behavior");
+      beh.innerHTML = "";
       [
         {v:"",t:"— choose behavior —"},
         {v:"0",t:"0 — Benign"},
@@ -336,51 +692,120 @@
         {v:"9",t:"9 — Malignant, uncertain"}
       ].forEach(o=>beh.appendChild(opt(o.v,o.t)));
 
-      const grd=$("#grade"); grd.innerHTML="";
+      // Grade select
+      const grd = $("#grade");
+      grd.innerHTML = "";
       [
         {v:"",t:"(none)"},
         {v:"1",t:"1 — Well differentiated"},
         {v:"2",t:"2 — Moderately differentiated"},
         {v:"3",t:"3 — Poorly differentiated"},
-        {v:"4",t:"4 — Undifferentiated"}
+        {v:"4",t:"4 — Undifferentiated"},
+        {v:"9",t:"9 — Unknown / not stated"}
       ].forEach(o=>grd.appendChild(opt(o.v,o.t)));
 
-      const lat=$("#laterality"); lat.innerHTML="";
-      ["","Right","Left","Bilateral","Not applicable"].forEach(x=>lat.appendChild(opt(x, x||"(none)")));
+      // Laterality select (ICD-O-ish codes)
+      const lat = $("#laterality");
+      lat.innerHTML = "";
+      [
+        {v:"", t:"(none)"},
+        {v:"0", t:"0 — Not a paired site"},
+        {v:"1", t:"1 — Right"},
+        {v:"2", t:"2 — Left"},
+        {v:"3", t:"3 — Only one side (paired site, NOS)"},
+        {v:"4", t:"4 — Bilateral"},
+        {v:"9", t:"9 — Paired site, laterality unknown"}
+      ].forEach(o=>lat.appendChild(opt(o.v,o.t)));
 
-      setupFilter("filter_topo", topoSel, topoAll, "— choose topography —");
-      setupFilter("filter_morph", morphSel, morphAll, "— choose morphology —");
+      // Filters (build list objects so we can keep dataset info)
+      const topoList = topoAll.map(t=>({
+        value: t.code,
+        label: `${t.code} — ${t.name}`,
+        searchKey: keyify(`${t.code} ${t.name}`),
+        data: {}
+      }));
+
+      const morphList = morphAll.map(m=>({
+        value: m.full,
+        label: `${m.full} — ${m.name || "(no name found)"}`,
+        searchKey: keyify(`${m.full} ${m.name || ""}`),
+        data: { histology: m.hist || "", behavior: m.beh || "" }
+      }));
+
+      setupFilter("filter_topo", topoSel, topoList, "— choose topography —");
+      setupFilter("filter_morph", morphSel, morphList, "— choose morphology —");
+
+      // Behavior locking based on selected morphology
+      morphSel.addEventListener("change", updateBehaviorLocking);
+      $("#behavior").addEventListener("change", renderMorphNotes);
+      $("#topography").addEventListener("change", renderMorphNotes);
+
+      // initial
+      updateBehaviorLocking();
     }
 
     function setupForm(){
       $("#icdoForm").addEventListener("submit",(e)=>{
         e.preventDefault();
-        const topo=$("#topography").value, morph=$("#morphology").value, beh=$("#behavior").value;
-        const grade=$("#grade").value, lat=$("#laterality").value;
-        if(!topo || !morph || !beh){ alert("Choose Topography, Morphology and Behavior."); return; }
-        const morphFull = `${morph}/${beh}${grade ? `/${grade}` : ""}`;
-        const final = `${topo} ${morphFull}${lat? " — "+lat : ""}`;
+
+        const topo = $("#topography").value;
+        const morphOpt = $("#morphology").selectedOptions[0];
+        const grade = $("#grade").value;
+        const lat = $("#laterality").value;
+
+        if(!topo || !morphOpt || !morphOpt.value){
+          alert("Choose Topography and Morphology.");
+          return;
+        }
+
+        // Histology and behavior
+        const hist = morphOpt.dataset.histology || parseMorphCode(morphOpt.value)?.hist || "";
+        const behFromMorph = morphOpt.dataset.behavior || parseMorphCode(morphOpt.value)?.beh || "";
+        const beh = behFromMorph || $("#behavior").value;
+
+        if(!hist || !beh){
+          alert("Behavior is required (your selected morphology code does not include it).");
+          return;
+        }
+
+        // ICD-O style: ####/b plus optional /grade
+        const morphFull = `${hist}/${beh}${grade ? `/${grade}` : ""}`;
+
+        // Laterality is typically separate, but users like seeing it
+        const latLabel = lat ? ($("#laterality").selectedOptions[0]?.textContent || "") : "";
+        const final = `${topo} ${morphFull}${lat ? ` — ${latLabel}` : ""}`;
+
         $("#resultCode").textContent = final;
 
-        const topoText=$("#topography").selectedOptions[0]?.textContent||"";
-        const morphText=$("#morphology").selectedOptions[0]?.textContent||"";
-        $("#partsLine").textContent = `Topography: ${topoText} | Morphology: ${morphText} → ${morphFull}${grade? " (grade "+grade+")":""}${lat? " | Laterality: "+lat:""}`;
+        const topoText = $("#topography").selectedOptions[0]?.textContent || "";
+        const morphText = $("#morphology").selectedOptions[0]?.textContent || "";
+        $("#partsLine").textContent =
+          `Topography: ${topoText} | Morphology: ${morphText} → ${morphFull}` +
+          (grade ? ` (grade ${grade})` : "") +
+          (lat ? ` | Laterality: ${latLabel}` : "");
+
+        renderMorphNotes();
       });
 
       $("#resetBtn").addEventListener("click",()=>{
         $("#icdoForm").reset();
         $("#resultCode").textContent="— your code will appear here —";
         $("#partsLine").textContent="";
+        $("#morphNotes").innerHTML = `<span class="hint">Select a morphology to see any notes.</span>`;
+        $("#behavior").disabled = false;
+        $("#behHint").textContent = "";
       });
 
       $("#copyBtn").addEventListener("click", async ()=>{
-        const t=$("#resultCode").textContent.trim();
+        const t = $("#resultCode").textContent.trim();
         if(!t || t.includes("will")) return;
         try{
           await navigator.clipboard.writeText(t);
           const ok=$("#copied"); ok.style.display="inline";
           setTimeout(()=> ok.style.display="none",1200);
-        }catch{ alert("Copy failed. Select and press Ctrl+C."); }
+        }catch{
+          alert("Copy failed. Select and press Ctrl+C.");
+        }
       });
     }
 
@@ -394,7 +819,7 @@
         await loadData();
       } catch (err) {
         console.error(err);
-        alert("Failed to load CSVs from /data or /docs/data. Ensure files exist and are UTF-8.");
+        alert("Failed to load CSVs from /data, /docs/data, or repo root. Ensure files exist and are UTF-8.");
       }
     })();
   </script>
