@@ -143,13 +143,9 @@
           <div>
             <label for="grade">Grade</label>
             <select id="grade"></select>
+            <div class="hint" id="gradeHint"></div>
           </div>
         </div>
-      </div>
-
-      <div class="card span-6">
-        <label for="laterality">Laterality</label>
-        <select id="laterality"></select>
       </div>
 
       <div class="card span-12">
@@ -175,7 +171,6 @@
           <button type="button" id="copyBtn">Copy</button>
           <button type="button" id="resetBtn">Reset</button>
           <span id="copied">Copied</span>
-          <span class="hint">Loading from <span class="mono">data/…</span> (GitHub Pages served from <span class="mono">docs/</span>).</span>
         </div>
       </div>
     </form>
@@ -500,6 +495,58 @@
       return { apply };
     }
 
+    function updateMorphSiteHint(){
+      const topo = $("#topography").value;
+      const el = $("#morphSiteHint");
+      el.textContent = topo
+        ? `Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized for ${topo} (soft filtering).`
+        : "Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.";
+    }
+
+    // --- NEW: Disable grade for benign behavior (0), and generally enable for others.
+    function updateGradeLocking(behaviorValue){
+      const grd = $("#grade");
+      const hint = $("#gradeHint");
+      const b = String(behaviorValue || "").trim();
+
+      // Benign: disable + clear
+      if(b === "0"){
+        grd.value = "";
+        grd.disabled = true;
+        hint.textContent = "Grade is not applicable for benign behavior (/0).";
+        return;
+      }
+
+      // Otherwise enable
+      grd.disabled = false;
+      hint.textContent = "";
+    }
+
+    function updateBehaviorLocking(){
+      const morphOpt = $("#morphology").selectedOptions[0];
+      const behSel = $("#behavior");
+      const behHint = $("#behHint");
+
+      if(!morphOpt || !morphOpt.value){
+        behSel.disabled = false;
+        behHint.textContent = "";
+        updateGradeLocking(behSel.value);
+        return;
+      }
+
+      const behFromMorph = morphOpt.dataset.behavior || "";
+      if(behFromMorph){
+        behSel.value = behFromMorph;
+        behSel.disabled = true;
+        behHint.textContent = "Behavior is taken from the selected morphology code.";
+      } else {
+        behSel.disabled = false;
+        behHint.textContent = "This morphology entry does not include behavior, so you must choose it.";
+      }
+
+      updateGradeLocking(behSel.value);
+    }
+
     function renderMorphNotes(){
       const box = $("#morphNotes");
       const topo = $("#topography").value;
@@ -541,8 +588,6 @@
       if(seer||npcr||coc||cccr){
         const who = [seer?"SEER":null, npcr?"NPCR":null, coc?"CoC":null, cccr?"CCCR":null].filter(Boolean).join(", ");
         pills.push(`<span class="pill ok">Required: ${who}</span>`);
-      } else {
-        pills.push(`<span class="pill">Required: (not flagged)</span>`);
       }
 
       const uniqTerms = [...new Set(terms)].slice(0, 10);
@@ -569,47 +614,16 @@
       `;
     }
 
-    function updateBehaviorLocking(){
-      const morphOpt = $("#morphology").selectedOptions[0];
-      const behSel = $("#behavior");
-      const hint = $("#behHint");
-
-      if(!morphOpt || !morphOpt.value){
-        behSel.disabled = false;
-        hint.textContent = "";
-        return;
-      }
-
-      const behFromMorph = morphOpt.dataset.behavior || "";
-      if(behFromMorph){
-        behSel.value = behFromMorph;
-        behSel.disabled = true;
-        hint.textContent = "Behavior is taken from the selected morphology code.";
-      } else {
-        behSel.disabled = false;
-        hint.textContent = "This morphology entry does not include behavior, so you must choose it.";
-      }
-    }
-
-    function updateMorphSiteHint(){
-      const topo = $("#topography").value;
-      const el = $("#morphSiteHint");
-      el.textContent = topo
-        ? `Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized for ${topo} (soft filtering).`
-        : "Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.";
-    }
-
     async function loadData(){
       await loadOptionalMeta();
 
-      // IMPORTANT: when Pages publishes /docs, docs/data/* becomes data/*
+      // GitHub Pages served from /docs => docs/data/* becomes /data/*
       const topoPaths = [
         "data/icdo_topography.csv",
         "docs/data/icdo_topography.csv",
         "icdo_topography.csv"
       ];
 
-      // Prefer the “latest preferred” file first, then fall back to icdo_morphology.csv
       const morphPaths = [
         "data/icdo_morphology_latest_preferred.csv",
         "data/icdo_morphology.csv",
@@ -669,6 +683,7 @@
         return robustMorphFromRow(row);
       }).filter(Boolean);
 
+      // Build filter lists
       const topoList = topoAll.map(t=>({
         value: t.code,
         label: `${t.code} — ${t.name}`,
@@ -684,7 +699,7 @@
         data: { histology: m.hist || "", behavior: m.beh || "" }
       }));
 
-      // Dropdowns
+      // Behavior dropdown
       const beh = $("#behavior");
       beh.innerHTML = "";
       [
@@ -697,6 +712,7 @@
         {v:"9",t:"9 — Malignant, uncertain"}
       ].forEach(o=>beh.appendChild(opt(o.v,o.t)));
 
+      // Grade dropdown
       const grd = $("#grade");
       grd.innerHTML = "";
       [
@@ -707,18 +723,6 @@
         {v:"4",t:"4 — Undifferentiated"},
         {v:"9",t:"9 — Unknown / not stated"}
       ].forEach(o=>grd.appendChild(opt(o.v,o.t)));
-
-      const lat = $("#laterality");
-      lat.innerHTML = "";
-      [
-        {v:"", t:"(none)"},
-        {v:"0", t:"0 — Not a paired site"},
-        {v:"1", t:"1 — Right"},
-        {v:"2", t:"2 — Left"},
-        {v:"3", t:"3 — Only one side (paired site, NOS)"},
-        {v:"4", t:"4 — Bilateral"},
-        {v:"9", t:"9 — Paired site, laterality unknown"}
-      ].forEach(o=>lat.appendChild(opt(o.v,o.t)));
 
       const topoSel = $("#topography");
       const morphSel = $("#morphology");
@@ -737,7 +741,11 @@
         renderMorphNotes();
       });
 
-      $("#behavior").addEventListener("change", renderMorphNotes);
+      // Behavior changes should also update grade locking + notes
+      $("#behavior").addEventListener("change", ()=>{
+        updateGradeLocking($("#behavior").value);
+        renderMorphNotes();
+      });
 
       updateMorphSiteHint();
       updateBehaviorLocking();
@@ -750,8 +758,7 @@
 
         const topo = $("#topography").value;
         const morphOpt = $("#morphology").selectedOptions[0];
-        const grade = $("#grade").value;
-        const lat = $("#laterality").value;
+        const grade = $("#grade").disabled ? "" : $("#grade").value;
 
         if(!topo || !morphOpt || !morphOpt.value){
           alert("Choose Topography and Morphology.");
@@ -767,9 +774,13 @@
           return;
         }
 
+        // Enforce: no grade for benign
+        if(beh === "0"){
+          // grade already cleared/disabled, but enforce anyway
+        }
+
         const morphFull = `${hist}/${beh}${grade ? `/${grade}` : ""}`;
-        const latLabel = lat ? ($("#laterality").selectedOptions[0]?.textContent || "") : "";
-        const final = `${topo} ${morphFull}${lat ? ` — ${latLabel}` : ""}`;
+        const final = `${topo} ${morphFull}`;
 
         $("#resultCode").textContent = final;
 
@@ -777,8 +788,7 @@
         const morphText = $("#morphology").selectedOptions[0]?.textContent || "";
         $("#partsLine").textContent =
           `Topography: ${topoText} | Morphology: ${morphText} → ${morphFull}` +
-          (grade ? ` (grade ${grade})` : "") +
-          (lat ? ` | Laterality: ${latLabel}` : "");
+          (grade ? ` (grade ${grade})` : "");
 
         renderMorphNotes();
       });
@@ -790,6 +800,8 @@
         $("#morphNotes").innerHTML = `<span class="hint">Select a morphology to view notes.</span>`;
         $("#behavior").disabled = false;
         $("#behHint").textContent = "";
+        $("#grade").disabled = false;
+        $("#gradeHint").textContent = "";
         updateMorphSiteHint();
       });
 
