@@ -98,8 +98,6 @@
       background:#fff;
       min-height:40px;
     }
-    a{ color:var(--accent); text-decoration:none; }
-    a:hover{ text-decoration:underline; }
     @media (max-width: 900px){
       .span-6{ grid-column: span 12; }
       .row{ grid-template-columns: 1fr; }
@@ -130,7 +128,9 @@
       <div class="card span-6">
         <label for="morphology">Morphology</label>
         <select id="morphology"><option value="">— choose morphology —</option></select>
-        <div class="hint" id="morphSiteHint">Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.</div>
+        <div class="hint" id="morphSiteHint">
+          Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.
+        </div>
       </div>
 
       <div class="card span-6">
@@ -175,7 +175,7 @@
           <button type="button" id="copyBtn">Copy</button>
           <button type="button" id="resetBtn">Reset</button>
           <span id="copied">Copied</span>
-          <span class="hint">CSV paths tried: <span class="mono">/data</span>, <span class="mono">/docs/data</span>, and repo root.</span>
+          <span class="hint">Loading from <span class="mono">data/…</span> (GitHub Pages served from <span class="mono">docs/</span>).</span>
         </div>
       </div>
     </form>
@@ -187,18 +187,11 @@
 
     let topoAll = [];
     let morphAll = [];
-
-    // Optional metadata map keyed by "####/b" -> array of entries
     let morphMetaByCode = new Map();
 
     function norm(x){ return String(x||"").trim().replace(/\s+/g," ").replace(/[–—]/g,"-"); }
-
-    // Accent-insensitive, case-insensitive key (works for Greek tonos too)
     function keyify(x){
-      return norm(x)
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "");
+      return norm(x).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     }
 
     async function fetchText(path){
@@ -206,7 +199,6 @@
       if(!res.ok) throw new Error("HTTP "+res.status);
       return await res.text();
     }
-
     async function fetchJSON(path){
       const res = await fetch(path, { cache: "no-store" });
       if(!res.ok) throw new Error("HTTP "+res.status);
@@ -262,60 +254,35 @@
       return null;
     }
 
-    // Robust multi-cell morphology extraction
     function robustMorphFromRow(row){
       for(const cell of row){
         const s = String(cell||"");
         const m = s.match(/^(\d{4}\/\d)\s*[-–—]?\s*(.+)$/);
-        if (m) return { full: m[1], hist: m[1].split("/")[0], beh: m[1].split("/")[1], name: norm(m[2]) };
+        if (m) return { full: m[1], hist: m[1].split("/")[0], beh: m[1].split("/")[1], name: norm(m[2]), searchBlob: "" };
       }
       for(const cell of row){
         const s = String(cell||"");
         const m = s.match(/^(\d{4})(?:\/\d)?\s*[-–—]?\s*(.+)$/);
-        if (m) return { full: m[1], hist: m[1], beh: "", name: norm(m[2]) };
+        if (m) return { full: m[1], hist: m[1], beh: "", name: norm(m[2]), searchBlob: "" };
       }
       let codeInfo = null;
-      let codeIdx = -1;
       for(let i=0;i<row.length;i++){
         const info = parseMorphCode(row[i]);
-        if(info){ codeInfo = info; codeIdx = i; break; }
+        if(info){ codeInfo = info; break; }
       }
       if(!codeInfo) return null;
 
       const hasLetters = s => /[A-Za-zΑ-Ωα-ω]/.test(s);
-
-      const parts = [];
-      for (let j = codeIdx + 1; j < row.length; j++){
-        const s = norm(row[j]);
-        if (!s) continue;
-        if (/\b\d{4}(?:\/\d)?\b/.test(s)) continue;
-        if (/^[0-9/.\-]+$/.test(s)) continue;
-        if (!hasLetters(s)) continue;
-        parts.push(s);
-      }
-      if (parts.length) return { ...codeInfo, name: norm(parts.join(" ")) };
-
-      const leftParts = [];
-      for (let j = codeIdx - 1; j >= 0; j--){
-        const s = norm(row[j]);
-        if (!s) continue;
-        if (/\b\d{4}(?:\/\d)?\b/.test(s)) continue;
-        if (/^[0-9/.\-]+$/.test(s)) continue;
-        if (!hasLetters(s)) continue;
-        leftParts.unshift(s);
-      }
-      if (leftParts.length) return { ...codeInfo, name: norm(leftParts.join(" ")) };
-
       let best = "";
       for (const cell of row){
         const s = norm(cell);
         if (!hasLetters(s)) continue;
         if (s.length > best.length) best = s;
       }
-      return best ? { ...codeInfo, name: best } : { ...codeInfo, name: "" };
+      return { ...codeInfo, name: best, searchBlob: "" };
     }
 
-    // ---- Topography helpers (for soft filtering + site-range validation) ----
+    // ---- Site helpers ----
     function topoMajor(code){
       const m = String(code||"").toUpperCase().match(/^C(\d{2})/);
       return m ? parseInt(m[1],10) : null;
@@ -359,7 +326,7 @@
 
     function topoInRanges(topoCode, parsedRanges){
       const key = topoToKey(topoCode);
-      if(key==null) return true; // can't evaluate => do not block
+      if(key==null) return true;
       for(const r of parsedRanges){
         if(!r) continue;
         const [a,b] = r;
@@ -377,14 +344,13 @@
         .replaceAll("'","&#039;");
     }
 
-    // ---- Optional 2026 update metadata loading ----
+    // ---- Load 2026 update metadata ----
     function buildMetaMapFromArray(arr){
       const map = new Map();
       for(const it of arr){
         const code = String(it.icdo || it.code || it.ICDO || "").trim();
         if(!code) continue;
 
-        // Pre-parse site ranges once (for scoring + validation)
         const sr = it.site_ranges;
         let parsed = [];
         if(Array.isArray(sr)){
@@ -404,10 +370,7 @@
       const candidates = [
         "data/icdo_3_2_update_2026_terms.json",
         "docs/data/icdo_3_2_update_2026_terms.json",
-        "icdo_3_2_update_2026_terms.json",
-        "data/icdo_morphology_meta.json",
-        "docs/data/icdo_morphology_meta.json",
-        "icdo_morphology_meta.json"
+        "icdo_3_2_update_2026_terms.json"
       ];
       for(const p of candidates){
         try{
@@ -416,16 +379,12 @@
             morphMetaByCode = buildMetaMapFromArray(j);
             return true;
           }
-          if(j && Array.isArray(j.items)){
-            morphMetaByCode = buildMetaMapFromArray(j.items);
-            return true;
-          }
         } catch {}
       }
       return false;
     }
 
-    // ---- Soft filtering / prioritization ranking ----
+    // ---- Soft filtering / prioritization ----
     const SITE_KEYWORDS = {
       50: ["breast", "mammary"],
       34: ["lung", "pulmonary", "bronch", "alveol"],
@@ -453,16 +412,14 @@
 
       const labelU = String(item.label||"").toUpperCase();
       const labelK = keyify(item.label||"");
-
+      const blobK  = keyify(item.searchBlob || "");
       let score = 0;
 
-      // 1) Explicit Cxx hints inside morphology terms e.g. "(C50._)" or "C50._"
       const major2 = String(major).padStart(2,"0");
       if (labelU.includes(`C${major2}.`) || labelU.includes(`C${major2}._`) || labelU.includes(`(C${major2}`)) {
         score += 40;
       }
 
-      // 2) 2026 metadata site restriction (strong boost if matches, penalty if mismatches)
       const code = (item.data?.histology && item.data?.behavior) ? `${item.data.histology}/${item.data.behavior}` : "";
       const metaItems = code ? (morphMetaByCode.get(code) || []) : [];
 
@@ -472,24 +429,19 @@
           const matches = metaItems.some(x => topoInRanges(topo, x._parsedRanges));
           score += matches ? 90 : -60;
         } else {
-          // Has metadata but no site restriction
           score += 15;
         }
-
         if(metaItems.some(x => !!x.non_reportable_note)) score -= 10;
       }
 
-      // 3) Keyword heuristic for common organ-specific terms (gentle)
       const kws = SITE_KEYWORDS[major] || [];
       for(const kw of kws){
-        if(labelK.includes(kw)) score += 8;
+        if(labelK.includes(kw) || blobK.includes(kw)) score += 8;
       }
 
-      // 4) If user typed a query, keep the “contains query” logic, ranking happens after filtering anyway.
       return score;
     }
 
-    // Filter builder with optional ranking function
     function setupFilter(inputId, selectEl, all, placeholder, rankFn=null){
       const input = $("#"+inputId);
 
@@ -514,23 +466,18 @@
         const n = keyify(q);
 
         let out = all;
-        if(n){
-          out = all.filter(x => x.searchKey.includes(n));
-        }
+        if(n) out = all.filter(x => x.searchKey.includes(n));
 
         if(rankFn){
           out = out.slice().sort((a,b)=>{
-            const da = rankFn(a);
-            const db = rankFn(b);
+            const da = rankFn(a), db = rankFn(b);
             if(db !== da) return db - da;
             return a.label.localeCompare(b.label);
           });
         }
-
         rebuild(out);
       }
 
-      // Debounced input
       let t=null;
       input.addEventListener("input",()=>{
         clearTimeout(t);
@@ -549,7 +496,6 @@
         }
       });
 
-      // Expose apply() so other controls (topography) can re-rank
       apply();
       return { apply };
     }
@@ -570,7 +516,7 @@
 
       const items = code ? (morphMetaByCode.get(code) || []) : [];
       if(!items.length){
-        box.innerHTML = `<span class="hint">No 2026 update notes for this code <span class="mono">${escapeHtml(code || morphOpt.value)}</span>.</span>`;
+        box.innerHTML = `<span class="hint">No 2026 update notes for <span class="mono">${escapeHtml(code || morphOpt.value)}</span> (most codes will not have any).</span>`;
         return;
       }
 
@@ -582,10 +528,10 @@
       const siteRestricted = allRanges.length > 0;
       const siteMismatch = (siteRestricted && topo) ? !topoInRanges(topo, allRanges) : false;
 
-      const seer = items.some(x => x.seer_required === true || x.SEER === true);
-      const npcr = items.some(x => x.npcr_required === true || x.NPCR === true);
-      const coc  = items.some(x => x.coc_required === true  || x.CoC === true);
-      const cccr = items.some(x => x.cccr_required === true || x.CCCR === true);
+      const seer = items.some(x => x.seer_required === true);
+      const npcr = items.some(x => x.npcr_required === true);
+      const coc  = items.some(x => x.coc_required === true);
+      const cccr = items.some(x => x.cccr_required === true);
 
       const pills = [];
       if(nonRep) pills.push(`<span class="pill bad">Non-reportable note</span>`);
@@ -593,12 +539,7 @@
       if(siteRestricted && !siteMismatch) pills.push(`<span class="pill ok">Site restriction: matches</span>`);
 
       if(seer||npcr||coc||cccr){
-        const who = [
-          seer ? "SEER" : null,
-          npcr ? "NPCR" : null,
-          coc  ? "CoC"  : null,
-          cccr ? "CCCR" : null
-        ].filter(Boolean).join(", ");
+        const who = [seer?"SEER":null, npcr?"NPCR":null, coc?"CoC":null, cccr?"CCCR":null].filter(Boolean).join(", ");
         pills.push(`<span class="pill ok">Required: ${who}</span>`);
       } else {
         pills.push(`<span class="pill">Required: (not flagged)</span>`);
@@ -653,26 +594,36 @@
     function updateMorphSiteHint(){
       const topo = $("#topography").value;
       const el = $("#morphSiteHint");
-      if(!topo){
-        el.textContent = "Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.";
-        return;
-      }
-      el.textContent = `Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized for ${topo} (soft filtering).`;
+      el.textContent = topo
+        ? `Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized for ${topo} (soft filtering).`
+        : "Tip: Morphology is not strictly site-limited in ICD-O. Results are prioritized after you choose a topography.";
     }
 
     async function loadData(){
       await loadOptionalMeta();
 
-      // Topography
-      const trows = await loadCSVAny([
+      // IMPORTANT: when Pages publishes /docs, docs/data/* becomes data/*
+      const topoPaths = [
         "data/icdo_topography.csv",
         "docs/data/icdo_topography.csv",
         "icdo_topography.csv"
-      ]);
+      ];
 
+      // Prefer the “latest preferred” file first, then fall back to icdo_morphology.csv
+      const morphPaths = [
+        "data/icdo_morphology_latest_preferred.csv",
+        "data/icdo_morphology.csv",
+        "docs/data/icdo_morphology_latest_preferred.csv",
+        "docs/data/icdo_morphology.csv",
+        "icdo_morphology_latest_preferred.csv",
+        "icdo_morphology.csv"
+      ];
+
+      // Topography
+      const trows = await loadCSVAny(topoPaths);
       const th = trows[0] || [];
-      const topoCodeIdx = pickCol(th, ["topography code","topo code","site code","code","icd-o","icdo","icd o"]);
-      const topoNameIdx = pickCol(th, ["topography name","topo name","site name","site","name","description","label","term","preferred term","όνομα","ονομασία","όρος","προτιμώμενος όρος"]);
+      const topoCodeIdx = pickCol(th, ["topography_code","topography code","topo code","site code","code","icd-o","icdo","icd o"]);
+      const topoNameIdx = pickCol(th, ["site_name","site name","topography name","topo name","site","name","description","label","term"]);
 
       topoAll = (trows.slice(1)).map(row=>{
         if(topoCodeIdx>=0 && topoNameIdx>=0 && topoCodeIdx!==topoNameIdx){
@@ -697,21 +648,14 @@
       }).filter(Boolean);
 
       // Morphology
-      const mrows = await loadCSVAny([
-        "data/icdo_morphology.csv",
-        "docs/data/icdo_morphology.csv",
-        "icdo_morphology.csv"
-      ]);
-
+      const mrows = await loadCSVAny(morphPaths);
       const mh = mrows[0] || [];
-      const morphCodeIdx = pickCol(mh, ["morphology code","morph code","code","icd-o","icdo","icd o","morph"]);
-      const morphNameIdx = pickCol(mh, [
-        "morphology name","morph name","name","description","label","term","preferred term",
-        "histology","diagnosis","who","english","greek",
-        "όνομα","ονομασία","όρος","προτιμώμενος όρος","ιστολογία","διάγνωση"
-      ]);
 
-      const looksLikeHeader = mh.some(h => /code|morph|name|term|histology|όνομα|ονομασία|όρος|ιστολογία|διάγνωση/i.test(String(h||"")));
+      const morphCodeIdx = pickCol(mh, ["morphology_code","morphology code","morph code","code","icd-o","icdo","icd o","morph"]);
+      const morphNameIdx = pickCol(mh, ["preferred_term","preferred term","term","name","label","description"]);
+      const morphSearchIdx = pickCol(mh, ["search_terms","search terms","synonym","synonyms","related"]);
+
+      const looksLikeHeader = mh.some(h => /code|morph|term|name|label|search/i.test(String(h||"")));
       const mDataRows = looksLikeHeader ? mrows.slice(1) : mrows;
 
       morphAll = mDataRows.map(row=>{
@@ -719,12 +663,12 @@
           const codeInfo = parseMorphCode(row[morphCodeIdx]||"");
           if(!codeInfo) return null;
           const name = norm(row[morphNameIdx]||"");
-          return { ...codeInfo, name };
+          const searchBlob = (morphSearchIdx>=0 && morphSearchIdx!==morphNameIdx) ? norm(row[morphSearchIdx]||"") : "";
+          return { ...codeInfo, name, searchBlob };
         }
         return robustMorphFromRow(row);
       }).filter(Boolean);
 
-      // Build lists for filters (these are what we rank/sort)
       const topoList = topoAll.map(t=>({
         value: t.code,
         label: `${t.code} — ${t.name}`,
@@ -735,15 +679,12 @@
       const morphList = morphAll.map(m=>({
         value: m.full,
         label: `${m.full} — ${m.name || "(no name found)"}`,
-        searchKey: keyify(`${m.full} ${m.name || ""}`),
+        searchKey: keyify(`${m.full} ${m.name || ""} ${m.searchBlob || ""}`),
+        searchBlob: m.searchBlob || "",
         data: { histology: m.hist || "", behavior: m.beh || "" }
       }));
 
-      // Build selects + filters
-      const topoSel = $("#topography");
-      const morphSel = $("#morphology");
-
-      // Behavior dropdown
+      // Dropdowns
       const beh = $("#behavior");
       beh.innerHTML = "";
       [
@@ -756,7 +697,6 @@
         {v:"9",t:"9 — Malignant, uncertain"}
       ].forEach(o=>beh.appendChild(opt(o.v,o.t)));
 
-      // Grade dropdown
       const grd = $("#grade");
       grd.innerHTML = "";
       [
@@ -768,7 +708,6 @@
         {v:"9",t:"9 — Unknown / not stated"}
       ].forEach(o=>grd.appendChild(opt(o.v,o.t)));
 
-      // Laterality dropdown (codes)
       const lat = $("#laterality");
       lat.innerHTML = "";
       [
@@ -781,13 +720,12 @@
         {v:"9", t:"9 — Paired site, laterality unknown"}
       ].forEach(o=>lat.appendChild(opt(o.v,o.t)));
 
-      // Filters with ranking:
-      // - Topography: no special ranking.
-      // - Morphology: ranked by selected topography (soft filtering).
+      const topoSel = $("#topography");
+      const morphSel = $("#morphology");
+
       const topoCtl = setupFilter("filter_topo", topoSel, topoList, "— choose topography —");
       const morphCtl = setupFilter("filter_morph", morphSel, morphList, "— choose morphology —", morphScore);
 
-      // When topography changes, re-apply morphology filter so it re-sorts
       topoSel.addEventListener("change", ()=>{
         updateMorphSiteHint();
         morphCtl.apply();
@@ -801,7 +739,6 @@
 
       $("#behavior").addEventListener("change", renderMorphNotes);
 
-      // Init state
       updateMorphSiteHint();
       updateBehaviorLocking();
       renderMorphNotes();
@@ -831,7 +768,6 @@
         }
 
         const morphFull = `${hist}/${beh}${grade ? `/${grade}` : ""}`;
-
         const latLabel = lat ? ($("#laterality").selectedOptions[0]?.textContent || "") : "";
         const final = `${topo} ${morphFull}${lat ? ` — ${latLabel}` : ""}`;
 
@@ -880,7 +816,7 @@
         await loadData();
       } catch (err) {
         console.error(err);
-        alert("Failed to load CSVs from /data, /docs/data, or repo root. Ensure files exist and are UTF-8.");
+        alert("Failed to load data files. Confirm they exist under docs/data/ (served as /data/).");
       }
     })();
   </script>
