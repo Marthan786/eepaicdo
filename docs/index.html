@@ -570,7 +570,7 @@
 
       const items = code ? (morphMetaByCode.get(code) || []) : [];
       if(!items.length){
-        box.innerHTML = `<span class="hint">No 2026 metadata found for <span class="mono">${escapeHtml(code || morphOpt.value)}</span>.</span>`;
+        box.innerHTML = `<span class="hint">No 2026 update notes for this code <span class="mono">${escapeHtml(code || morphOpt.value)}</span>.</span>`;
         return;
       }
 
